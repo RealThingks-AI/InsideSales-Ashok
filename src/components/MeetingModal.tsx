@@ -224,20 +224,11 @@ const TIMEZONES = [{
 
 // Duration options
 const DURATION_OPTIONS = [{
-  value: "15",
-  label: "15 min"
-}, {
   value: "30",
   label: "30 min"
 }, {
-  value: "45",
-  label: "45 min"
-}, {
   value: "60",
   label: "1 hour"
-}, {
-  value: "90",
-  label: "1.5 hours"
 }, {
   value: "120",
   label: "2 hours"
@@ -458,12 +449,21 @@ export const MeetingModal = ({
           setParticipants([]);
         }
       } else {
-        // Default: next hour rounded to 15 min
-        const defaultStart = new Date();
-        defaultStart.setMinutes(Math.ceil(defaultStart.getMinutes() / 15) * 15 + 15, 0, 0);
+        // Default: next available 30-min slot in user's timezone
+        const browserTz = getBrowserTimezone();
+        const nowInTz = toZonedTime(new Date(), browserTz);
+        const currentMinutes = nowInTz.getMinutes();
+        // Round up to next 30-minute slot
+        const nextSlotMinutes = currentMinutes < 30 ? 30 : 60;
+        const defaultStart = new Date(nowInTz);
+        if (nextSlotMinutes === 60) {
+          defaultStart.setHours(defaultStart.getHours() + 1, 0, 0, 0);
+        } else {
+          defaultStart.setMinutes(30, 0, 0);
+        }
         setStartDate(defaultStart);
         setStartTime(format(defaultStart, "HH:mm"));
-        setDuration("60");
+        setDuration("30");
         setTimezone(getBrowserTimezone());
         setLinkType('lead');
         setParticipants([]);
