@@ -31,6 +31,9 @@ const UserDashboard = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(1200);
   
+  // Pending widget changes for batch add/remove
+  const [pendingWidgetChanges, setPendingWidgetChanges] = useState<Set<WidgetKey>>(new Set());
+  
   // Modal states for viewing records
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
@@ -221,48 +224,118 @@ const UserDashboard = () => {
     });
   }, [visibleWidgets, widgetOrder, widgetLayouts, savePreferencesMutation]);
 
-  // Handle widget addition
-  const handleWidgetAdd = useCallback((key: WidgetKey) => {
-    if (visibleWidgets.includes(key)) return;
+  // Toggle widget in pending changes (for batch add/remove)
+  const togglePendingWidget = useCallback((key: WidgetKey) => {
+    setPendingWidgetChanges(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
 
-    const nextVisible = [...visibleWidgets, key];
-    const nextOrder = widgetOrder.includes(key) ? widgetOrder : [...widgetOrder, key];
+  // Check if a widget will be visible (current state + pending changes)
+  const willWidgetBeVisible = useCallback((key: WidgetKey) => {
+    const isCurrentlyVisible = visibleWidgets.includes(key);
+    const isPending = pendingWidgetChanges.has(key);
+    // If pending, toggle the current state
+    return isPending ? !isCurrentlyVisible : isCurrentlyVisible;
+  }, [visibleWidgets, pendingWidgetChanges]);
 
-    const defaultLayout =
-      DEFAULT_WIDGETS.find((w) => w.key === key)?.defaultLayout ??
-      ({ x: 0, y: 0, w: 3, h: 2 } as WidgetLayout);
+  // Apply pending widget changes
+  const applyPendingChanges = useCallback(() => {
+    if (pendingWidgetChanges.size === 0) return;
 
-    const maxY = Math.max(
-      0,
-      ...Object.values(widgetLayouts).map((l) => (l?.y ?? 0) + (l?.h ?? 0))
-    );
+    let nextVisible = [...visibleWidgets];
+    let nextOrder = [...widgetOrder];
+    let nextLayouts = { ...widgetLayouts };
 
-    const nextLayouts = {
-      ...widgetLayouts,
-      [key]: {
-        ...defaultLayout,
-        y: maxY,
-      },
-    };
+    pendingWidgetChanges.forEach(key => {
+      const isCurrentlyVisible = visibleWidgets.includes(key);
+      
+      if (isCurrentlyVisible) {
+        // Remove widget
+        nextVisible = nextVisible.filter(w => w !== key);
+        nextOrder = nextOrder.filter(w => w !== key);
+        delete nextLayouts[key];
+      } else {
+        // Add widget
+        nextVisible.push(key);
+        if (!nextOrder.includes(key)) {
+          nextOrder.push(key);
+        }
+        
+        const defaultLayout =
+          DEFAULT_WIDGETS.find((w) => w.key === key)?.defaultLayout ??
+          ({ x: 0, y: 0, w: 3, h: 2 } as WidgetLayout);
+
+        const maxY = Math.max(
+          0,
+          ...Object.values(nextLayouts).map((l) => (l?.y ?? 0) + (l?.h ?? 0))
+        );
+
+        nextLayouts[key] = {
+          ...defaultLayout,
+          y: maxY,
+        };
+      }
+    });
 
     setVisibleWidgets(nextVisible);
     setWidgetOrder(nextOrder);
     setWidgetLayouts(nextLayouts);
-
-    savePreferencesMutation.mutate({
-      widgets: nextVisible,
-      order: nextOrder,
-      layouts: nextLayouts,
-    });
-  }, [visibleWidgets, widgetOrder, widgetLayouts, savePreferencesMutation]);
+    setPendingWidgetChanges(new Set());
+  }, [pendingWidgetChanges, visibleWidgets, widgetOrder, widgetLayouts]);
 
   // Save layout and exit resize mode
   const handleSaveLayout = () => {
-    savePreferencesMutation.mutate({
-      widgets: visibleWidgets,
-      order: widgetOrder,
-      layouts: widgetLayouts
+    // Apply any pending widget changes first
+    applyPendingChanges();
+    
+    // Get final state after applying changes
+    let finalVisible = [...visibleWidgets];
+    let finalOrder = [...widgetOrder];
+    let finalLayouts = { ...widgetLayouts };
+    
+    // Apply pending changes to final state
+    pendingWidgetChanges.forEach(key => {
+      const isCurrentlyVisible = visibleWidgets.includes(key);
+      
+      if (isCurrentlyVisible) {
+        finalVisible = finalVisible.filter(w => w !== key);
+        finalOrder = finalOrder.filter(w => w !== key);
+        delete finalLayouts[key];
+      } else {
+        finalVisible.push(key);
+        if (!finalOrder.includes(key)) {
+          finalOrder.push(key);
+        }
+        
+        const defaultLayout =
+          DEFAULT_WIDGETS.find((w) => w.key === key)?.defaultLayout ??
+          ({ x: 0, y: 0, w: 3, h: 2 } as WidgetLayout);
+
+        const maxY = Math.max(
+          0,
+          ...Object.values(finalLayouts).map((l) => (l?.y ?? 0) + (l?.h ?? 0))
+        );
+
+        finalLayouts[key] = {
+          ...defaultLayout,
+          y: maxY,
+        };
+      }
     });
+    
+    savePreferencesMutation.mutate({
+      widgets: finalVisible,
+      order: finalOrder,
+      layouts: finalLayouts
+    });
+    setPendingWidgetChanges(new Set());
     setIsResizeMode(false);
   };
 
@@ -1125,25 +1198,41 @@ const UserDashboard = () => {
                   <Button variant="outline" className="gap-2">
                     <Plus className="w-4 h-4" />
                     Add Widget
+                    {pendingWidgetChanges.size > 0 && (
+                      <span className="bg-primary text-primary-foreground text-xs px-1.5 py-0.5 rounded-full">
+                        {pendingWidgetChanges.size}
+                      </span>
+                    )}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-64 p-0" align="end">
+                  <div className="p-3 border-b">
+                    <p className="text-sm font-medium">Toggle Widgets</p>
+                    <p className="text-xs text-muted-foreground">Click to add/remove. Changes apply when you click Done.</p>
+                  </div>
                   <ScrollArea className="h-64">
                     <div className="p-2 space-y-1">
-                      {DEFAULT_WIDGETS.filter(w => !visibleWidgets.includes(w.key)).length === 0 ? (
-                        <p className="text-sm text-muted-foreground p-3 text-center">All widgets are already added</p>
-                      ) : (
-                        DEFAULT_WIDGETS.filter(w => !visibleWidgets.includes(w.key)).map(widget => (
+                      {DEFAULT_WIDGETS.map(widget => {
+                        const willBeVisible = willWidgetBeVisible(widget.key);
+                        const isPending = pendingWidgetChanges.has(widget.key);
+                        
+                        return (
                           <Button
                             key={widget.key}
                             variant="ghost"
-                            className="w-full justify-start gap-2"
-                            onClick={() => handleWidgetAdd(widget.key)}
+                            className={`w-full justify-between gap-2 ${isPending ? 'bg-primary/10' : ''}`}
+                            onClick={() => togglePendingWidget(widget.key)}
                           >
-                            {widget.label}
+                            <span className="flex items-center gap-2">
+                              {widget.icon}
+                              {widget.label}
+                            </span>
+                            {willBeVisible && (
+                              <Check className="w-4 h-4 text-primary" />
+                            )}
                           </Button>
-                        ))
-                      )}
+                        );
+                      })}
                     </div>
                   </ScrollArea>
                 </PopoverContent>
