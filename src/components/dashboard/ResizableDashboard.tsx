@@ -219,7 +219,7 @@ export const ResizableDashboard = ({
         .dash-item {
           height: 100%;
           position: relative;
-          overflow: hidden;
+          overflow: visible;
           border-radius: 0.5rem;
           background: hsl(var(--card));
           border: 1px solid hsl(var(--border));

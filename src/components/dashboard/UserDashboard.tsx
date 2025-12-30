@@ -153,7 +153,7 @@ const UserDashboard = () => {
       if (!user?.id) return null;
       const { data, error } = await supabase
         .from('dashboard_preferences')
-        .select('visible_widgets, card_order, layout_view')
+        .select('visible_widgets, card_order, widget_layouts, layout_view')
         .eq('user_id', user.id)
         .maybeSingle();
       if (error) throw error;
@@ -171,6 +171,12 @@ const UserDashboard = () => {
   const [widgetOrder, setWidgetOrder] = useState<WidgetKey[]>(defaultWidgetKeys);
 
   const parseWidgetLayouts = (): WidgetLayoutConfig => {
+    // Prefer new widget_layouts column (jsonb)
+    const widgetLayoutsData = (dashboardPrefs as any)?.widget_layouts;
+    if (widgetLayoutsData && typeof widgetLayoutsData === "object") {
+      return widgetLayoutsData as WidgetLayoutConfig;
+    }
+    // Fallback to legacy layout_view parsing
     if (!dashboardPrefs?.layout_view) return {};
     if (typeof dashboardPrefs.layout_view === "object") {
       return dashboardPrefs.layout_view as WidgetLayoutConfig;
@@ -182,7 +188,7 @@ const UserDashboard = () => {
           return parsed as WidgetLayoutConfig;
         }
       } catch {
-        // Legacy string value
+        // Legacy string value (e.g., "overview")
       }
     }
     return {};
@@ -226,7 +232,7 @@ const UserDashboard = () => {
     setVisibleWidgets(nextVisible);
     setWidgetOrder(nextOrder);
     setWidgetLayouts(compactedLayouts);
-  }, [user?.id, dashboardPrefs?.visible_widgets, dashboardPrefs?.card_order, dashboardPrefs?.layout_view]);
+  }, [user?.id, dashboardPrefs?.visible_widgets, dashboardPrefs?.card_order, (dashboardPrefs as any)?.widget_layouts, dashboardPrefs?.layout_view]);
 
   const savePreferencesMutation = useMutation({
     mutationFn: async ({ widgets, order, layouts }: { widgets: WidgetKey[], order: WidgetKey[], layouts: WidgetLayoutConfig }) => {
@@ -237,9 +243,9 @@ const UserDashboard = () => {
           user_id: user.id,
           visible_widgets: widgets,
           card_order: order,
-          layout_view: JSON.stringify(layouts),
+          widget_layouts: layouts,
           updated_at: new Date().toISOString(),
-        }, { onConflict: 'user_id' })
+        } as any, { onConflict: 'user_id' })
         .select();
       if (error) throw error;
       return data;
