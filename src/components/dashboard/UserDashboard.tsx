@@ -111,8 +111,12 @@ const UserDashboard = () => {
   useEffect(() => {
     const updateWidth = () => {
       if (containerRef.current) {
-        // Use full client width for edge-to-edge layout
-        const width = containerRef.current.clientWidth;
+        // Get computed styles to account for padding
+        const styles = getComputedStyle(containerRef.current);
+        const paddingLeft = parseFloat(styles.paddingLeft) || 0;
+        const paddingRight = parseFloat(styles.paddingRight) || 0;
+        // Use inner width (excluding padding) for accurate grid sizing
+        const width = containerRef.current.clientWidth - paddingLeft - paddingRight;
         setContainerWidth(Math.max(320, width));
       }
     };
@@ -1683,7 +1687,7 @@ const UserDashboard = () => {
   };
 
   return (
-    <div className="px-2 sm:px-4 py-4 space-y-4 w-full" ref={containerRef}>
+    <div className="px-2 sm:px-4 py-4 space-y-4 w-full overflow-x-hidden" ref={containerRef}>
       {/* Welcome Header */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="min-w-0 flex-1">

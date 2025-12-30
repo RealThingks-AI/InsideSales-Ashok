@@ -203,6 +203,8 @@ export const ResizableDashboard = ({
         .dashboard-grid {
           width: 100%;
           box-sizing: border-box;
+          overflow-x: hidden;
+          overflow-y: visible;
         }
         .dashboard-grid .layout {
           width: 100% !important;
@@ -210,9 +212,11 @@ export const ResizableDashboard = ({
         .dashboard-grid .react-grid-layout {
           min-height: 200px;
           width: 100% !important;
+          overflow: visible;
         }
         .dashboard-grid .react-grid-item {
           max-width: 100%;
+          overflow: hidden;
         }
 
         .dash-item {
