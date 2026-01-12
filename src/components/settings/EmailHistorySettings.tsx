@@ -137,9 +137,11 @@ const EmailHistorySettings = () => {
   const [retryingEmailId, setRetryingEmailId] = useState<string | null>(null);
   const [dateRange, setDateRange] = useState<string>("all");
   const [isSyncingBounces, setIsSyncingBounces] = useState(false);
+  const [isSyncingReplies, setIsSyncingReplies] = useState(false);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
   const [replies, setReplies] = useState<EmailReply[]>([]);
   const [loadingReplies, setLoadingReplies] = useState(false);
+  const [expandedReplyId, setExpandedReplyId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchEmailHistory();
@@ -269,6 +271,39 @@ const EmailHistorySettings = () => {
       });
     } finally {
       setIsSyncingBounces(false);
+    }
+  };
+
+  const handleSyncReplies = async () => {
+    setIsSyncingReplies(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      const { data, error } = await supabase.functions.invoke('process-email-replies', {
+        body: {},
+        headers: {
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+      });
+
+      if (error) throw error;
+
+      toast({
+        title: "Reply Sync Complete",
+        description: data.message || `Found ${data.repliesFound || 0} new reply(s)`,
+      });
+
+      // Refresh the list
+      fetchEmailHistory();
+    } catch (error: any) {
+      console.error('Error syncing replies:', error);
+      toast({
+        title: "Sync Failed",
+        description: error.message || "Failed to check replies. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSyncingReplies(false);
     }
   };
 
@@ -679,6 +714,25 @@ const EmailHistorySettings = () => {
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="outline" onClick={handleSyncReplies} disabled={isSyncingReplies}>
+                  <Reply className={`h-4 w-4 mr-2 ${isSyncingReplies ? 'animate-pulse' : ''}`} />
+                  {isSyncingReplies ? 'Syncing...' : 'Sync Replies'}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[300px]">
+                <p className="font-medium">Reply Detection</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Checks inbox for replies to sent emails within the last 30 days.
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Only works for emails where the Message-ID was successfully captured.
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <Button variant="outline" onClick={handleExportCSV} disabled={filteredEmails.length === 0}>
             <Download className="h-4 w-4 mr-2" />
             Export
@@ -951,7 +1005,7 @@ const EmailHistorySettings = () => {
                 );
               })()}
 
-              {/* Replies Section */}
+              {/* Replies Section - Outlook-style formatting */}
               {(selectedEmail.reply_count || 0) > 0 && (
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
@@ -960,22 +1014,120 @@ const EmailHistorySettings = () => {
                   </div>
                   {loadingReplies ? (
                     <div className="space-y-2">
-                      <Skeleton className="h-16 w-full" />
-                      <Skeleton className="h-16 w-full" />
+                      <Skeleton className="h-24 w-full" />
+                      <Skeleton className="h-24 w-full" />
                     </div>
                   ) : replies.length > 0 ? (
-                    <div className="space-y-2 max-h-[200px] overflow-y-auto">
-                      {replies.map(reply => (
-                        <div key={reply.id} className="p-3 bg-purple-50/50 dark:bg-purple-900/10 rounded-lg border">
-                          <div className="flex justify-between items-start mb-1">
-                            <span className="font-medium text-sm">{reply.from_name || reply.from_email}</span>
-                            <span className="text-xs text-muted-foreground">
-                              {format(new Date(reply.received_at), 'MMM d, yyyy HH:mm')}
-                            </span>
+                    <div className="space-y-3 max-h-[350px] overflow-y-auto">
+                      {replies.map(reply => {
+                        // Parse reply body to separate actual reply from quoted content
+                        const parseEmailReply = (bodyPreview: string) => {
+                          const separators = [
+                            /_{10,}/,  // Underscore separator (Outlook)
+                            /^-{3,}\s*Original Message\s*-{3,}/mi,
+                            /^On .+ wrote:$/m,
+                            /^From:.+\nSent:.+\nTo:.+/m,
+                          ];
+                          
+                          let replyBody = bodyPreview;
+                          let quotedContent = '';
+                          
+                          for (const sep of separators) {
+                            const match = bodyPreview.match(sep);
+                            if (match && match.index !== undefined) {
+                              replyBody = bodyPreview.substring(0, match.index).trim();
+                              quotedContent = bodyPreview.substring(match.index).trim();
+                              break;
+                            }
+                          }
+                          
+                          return { replyBody, quotedContent };
+                        };
+                        
+                        const { replyBody, quotedContent } = parseEmailReply(reply.body_preview || '');
+                        const initials = (reply.from_name || reply.from_email.split('@')[0])
+                          .split(' ')
+                          .map(n => n[0])
+                          .join('')
+                          .toUpperCase()
+                          .substring(0, 2);
+                        
+                        // Generate consistent color based on email
+                        const getAvatarColor = (email: string) => {
+                          const colors = ['bg-red-600', 'bg-blue-600', 'bg-green-600', 'bg-purple-600', 'bg-orange-600', 'bg-teal-600'];
+                          const hash = email.split('').reduce((a, b) => a + b.charCodeAt(0), 0);
+                          return colors[hash % colors.length];
+                        };
+                        
+                        const isExpanded = expandedReplyId === reply.id;
+                        
+                        return (
+                          <div key={reply.id} className="rounded-lg border overflow-hidden shadow-sm">
+                            {/* Subject Header - Dark background like Outlook */}
+                            <div className="bg-slate-700 dark:bg-slate-800 px-4 py-2">
+                              <span className="text-white text-sm font-medium">
+                                {reply.subject || 'No Subject'}
+                              </span>
+                            </div>
+                            
+                            {/* Email Content */}
+                            <div className="p-4 bg-background">
+                              {/* Sender Row */}
+                              <div className="flex items-start gap-3 mb-3">
+                                {/* Avatar/Initials */}
+                                <div className={`w-9 h-9 rounded-full ${getAvatarColor(reply.from_email)} flex items-center justify-center flex-shrink-0`}>
+                                  <span className="text-white text-xs font-semibold">{initials}</span>
+                                </div>
+                                
+                                <div className="flex-1 min-w-0">
+                                  {/* Sender name */}
+                                  <div className="font-medium text-sm">
+                                    {reply.from_name || reply.from_email}
+                                  </div>
+                                  
+                                  {/* To line */}
+                                  <div className="text-xs text-muted-foreground flex items-center gap-1">
+                                    <span>To:</span>
+                                    <span className="inline-flex items-center">
+                                      <span className="w-3 h-3 rounded-full border border-muted-foreground/50 inline-block mr-1" />
+                                      {selectedEmail.recipient_name || selectedEmail.sender_email}
+                                    </span>
+                                  </div>
+                                </div>
+                                
+                                {/* Timestamp */}
+                                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                                  {format(new Date(reply.received_at), 'MMM d, yyyy HH:mm')}
+                                </span>
+                              </div>
+                              
+                              {/* Reply Body */}
+                              <div className="text-sm whitespace-pre-line pl-12">
+                                {replyBody || 'No content'}
+                              </div>
+                              
+                              {/* Quoted Content - Collapsible */}
+                              {quotedContent && (
+                                <Collapsible 
+                                  open={isExpanded} 
+                                  onOpenChange={() => setExpandedReplyId(isExpanded ? null : reply.id)}
+                                  className="mt-3 pl-12"
+                                >
+                                  <CollapsibleTrigger className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1">
+                                    <ChevronDown className={`h-3 w-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                                    {isExpanded ? 'Hide' : 'Show'} quoted text
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent>
+                                    <div className="mt-2 text-xs text-muted-foreground border-l-2 border-muted pl-3 whitespace-pre-line">
+                                      {quotedContent}
+                                    </div>
+                                  </CollapsibleContent>
+                                </Collapsible>
+                              )}
+                            </div>
                           </div>
-                          <p className="text-sm text-muted-foreground">{reply.body_preview || 'No preview available'}</p>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground">Replies detected but details not available yet.</p>

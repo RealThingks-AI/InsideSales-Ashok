@@ -310,19 +310,19 @@ const handler = async (req: Request): Promise<Response> => {
     await sendEmail(accessToken, { to, subject, body, toName, from, attachments }, emailRecord.id);
 
     // Fetch the sent message to get its Message-ID for reply tracking
-    // Use improved logic with retries and no problematic filter
+    // Use improved logic with fuzzy subject matching and recipient verification
     let messageId: string | null = null;
     let retries = 0;
-    const maxRetries = 3;
+    const maxRetries = 4;
 
     while (!messageId && retries < maxRetries) {
-      // Increase delay with each retry (1.5s, 3s, 4.5s)
-      await new Promise(resolve => setTimeout(resolve, 1500 * (retries + 1)));
+      // Increase delay with each retry (2s, 3s, 4s, 5s)
+      await new Promise(resolve => setTimeout(resolve, 2000 + (retries * 1000)));
       retries++;
       
       try {
-        // Fetch most recent sent emails WITHOUT filter (more reliable)
-        const sentItemsUrl = `https://graph.microsoft.com/v1.0/users/${from}/mailFolders/SentItems/messages?$top=5&$orderby=sentDateTime desc&$select=internetMessageId,subject,sentDateTime`;
+        // Fetch more sent emails for better matching
+        const sentItemsUrl = `https://graph.microsoft.com/v1.0/users/${from}/mailFolders/SentItems/messages?$top=10&$orderby=sentDateTime desc&$select=internetMessageId,subject,sentDateTime,toRecipients`;
         
         const sentResponse = await fetch(sentItemsUrl, {
           headers: { Authorization: `Bearer ${accessToken}` },
@@ -330,14 +330,64 @@ const handler = async (req: Request): Promise<Response> => {
         
         if (sentResponse.ok) {
           const sentData = await sentResponse.json();
-          // Find matching email by subject (sent in last 30 seconds)
-          for (const msg of sentData.value || []) {
+          const messages = sentData.value || [];
+          
+          // Filter messages sent within 90 seconds (increased from 30s)
+          const recentMessages = messages.filter((msg: any) => {
             const msgTime = new Date(msg.sentDateTime);
             const timeDiff = Date.now() - msgTime.getTime();
-            if (msg.subject === subject && timeDiff < 30000) {
-              messageId = msg.internetMessageId;
-              console.log(`Captured Message-ID on attempt ${retries}: ${messageId}`);
-              break;
+            return timeDiff < 90000; // 90 seconds window
+          });
+
+          console.log(`Attempt ${retries}: Found ${recentMessages.length} recent messages in sent folder`);
+
+          // If only one recent message, use it directly (most reliable)
+          if (recentMessages.length === 1) {
+            messageId = recentMessages[0].internetMessageId;
+            console.log(`Single recent email - captured Message-ID on attempt ${retries}: ${messageId}`);
+            break;
+          }
+
+          // Try to match by recipient email first (most reliable)
+          for (const msg of recentMessages) {
+            const msgRecipients = msg.toRecipients || [];
+            const recipientMatch = msgRecipients.some((r: any) => 
+              r.emailAddress?.address?.toLowerCase() === cleanedTo.toLowerCase()
+            );
+            
+            if (recipientMatch) {
+              // Also check fuzzy subject match for extra confidence
+              // Remove template placeholders like {{Name}} for comparison
+              const normalizeSubject = (s: string) => 
+                s.replace(/\{\{[^}]+\}\}/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+              
+              const normalizedSubject = normalizeSubject(subject);
+              const normalizedMsgSubject = normalizeSubject(msg.subject || '');
+              
+              // Check if subjects are similar (share at least first 15 chars or one contains the other)
+              const subjectSimilar = 
+                normalizedSubject.substring(0, 15) === normalizedMsgSubject.substring(0, 15) ||
+                normalizedSubject.includes(normalizedMsgSubject.substring(0, 15)) ||
+                normalizedMsgSubject.includes(normalizedSubject.substring(0, 15)) ||
+                msg.subject === subject; // Exact match
+              
+              if (subjectSimilar || recentMessages.length <= 2) {
+                // Recipient matches and subject is similar (or few messages to choose from)
+                messageId = msg.internetMessageId;
+                console.log(`Matched by recipient + subject on attempt ${retries}: ${messageId}`);
+                break;
+              }
+            }
+          }
+
+          // Fallback: exact subject match
+          if (!messageId) {
+            for (const msg of recentMessages) {
+              if (msg.subject === subject) {
+                messageId = msg.internetMessageId;
+                console.log(`Matched by exact subject on attempt ${retries}: ${messageId}`);
+                break;
+              }
             }
           }
         } else {
@@ -350,6 +400,8 @@ const handler = async (req: Request): Promise<Response> => {
 
     if (!messageId) {
       console.warn(`Could not capture Message-ID for email to ${cleanedTo} after ${maxRetries} attempts`);
+    } else {
+      console.log(`Successfully captured Message-ID: ${messageId}`);
     }
 
     // Update email history to mark as sent with Message-ID

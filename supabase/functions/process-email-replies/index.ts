@@ -140,12 +140,14 @@ serve(async (req: Request) => {
       });
     }
 
-    // Get emails sent in the last 7 days that have a message_id and haven't been replied to yet
-    const sinceDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    // Get emails sent in the last 30 days that have a message_id and haven't been replied to yet
+    const sinceDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    
+    console.log(`Searching for emails with message_id since: ${sinceDate}`);
     
     const { data: sentEmails, error: sentError } = await supabase
       .from('email_history')
-      .select('id, sender_email, recipient_email, subject, message_id, sent_by, reply_count')
+      .select('id, sender_email, recipient_email, subject, message_id, sent_by, reply_count, sent_at')
       .gte('sent_at', sinceDate)
       .not('message_id', 'is', null)
       .not('status', 'eq', 'bounced')
@@ -162,12 +164,27 @@ serve(async (req: Request) => {
       });
     }
 
+    // Also log emails without message_id for debugging
+    const { data: emailsWithoutMsgId } = await supabase
+      .from('email_history')
+      .select('id, recipient_email, subject')
+      .gte('sent_at', sinceDate)
+      .is('message_id', null)
+      .not('status', 'eq', 'bounced');
+    
+    console.log(`Emails WITH message_id: ${sentEmails?.length || 0}`);
+    console.log(`Emails WITHOUT message_id: ${emailsWithoutMsgId?.length || 0}`);
+
     if (!sentEmails || sentEmails.length === 0) {
       console.log("No emails with message_id found to check for replies");
       return new Response(JSON.stringify({
         success: true,
         message: "No emails to check for replies",
         repliesFound: 0,
+        emailsWithoutMessageId: emailsWithoutMsgId?.length || 0,
+        hint: emailsWithoutMsgId && emailsWithoutMsgId.length > 0 
+          ? `Found ${emailsWithoutMsgId.length} emails without message_id - these cannot be tracked for replies`
+          : undefined,
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -205,9 +222,29 @@ serve(async (req: Request) => {
       for (const reply of replies) {
         if (!reply.in_reply_to) continue;
         
-        // Try to match the reply to a sent email
-        const originalEmail = messageIdToEmail.get(reply.in_reply_to) || 
-                             messageIdToEmail.get(`<${reply.in_reply_to}>`);
+        // Debug: log what we're trying to match
+        console.log(`Trying to match reply In-Reply-To: ${reply.in_reply_to}`);
+        console.log(`Available message_ids: ${Array.from(messageIdToEmail.keys()).slice(0, 5).join(', ')}...`);
+        
+        // Try to match the reply to a sent email (try multiple formats)
+        let originalEmail = messageIdToEmail.get(reply.in_reply_to);
+        
+        if (!originalEmail) {
+          // Try with angle brackets
+          originalEmail = messageIdToEmail.get(`<${reply.in_reply_to}>`);
+        }
+        
+        if (!originalEmail) {
+          // Try without angle brackets
+          const cleanedId = reply.in_reply_to.replace(/^<|>$/g, '');
+          originalEmail = messageIdToEmail.get(cleanedId);
+        }
+        
+        if (originalEmail) {
+          console.log(`✅ Found matching email: ${originalEmail.id}`);
+        } else {
+          console.log(`❌ No match found for In-Reply-To: ${reply.in_reply_to}`);
+        }
         
         if (originalEmail) {
           // Check if we already have this reply
